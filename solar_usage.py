@@ -20,7 +20,7 @@ class Sample(object):
         self.usage = usage
 
     def __repr__(self):
-        return "{}: {} / {}".format(self.ts, self.solar, self.usage)
+        return '{}: {} / {}'.format(self.ts, self.solar, self.usage)
 
     def is_empty(self):
         return self.solar is None and self.usage is None
@@ -75,7 +75,7 @@ class NumberDisplay(object):
             self.num_updates += 1
 
         def as_text(value):
-            return "-" if value is None else "{:.1f}W".format(value)
+            return '  -' if value is None else '{:.1f}W'.format(value)
 
         ugfx.area(36, 4, 130-36, 32-4, ugfx.WHITE)
         ugfx.area(166, 4, WIDTH-166, 32-4, ugfx.WHITE)
@@ -90,9 +90,10 @@ class Graph(object):
 
     Draws to the display from (0,0) to (WIDTH-1, LINE_Y), inclusive
     """
-    TS_SCALAR = 15  # this many seconds per pixel
+    TS_SCALAR = 30  # this many seconds per pixel
     X_WIDTH = WIDTH-LINE_X  # 278, 1 minute per pixel
     Y_HEIGHT = XAXIS_Y-LINE_Y
+    UPDATES_FULL_REFRESH = 5
 
     def __init__(self):
         self.num_updates = 0  # trigger a full redraw next
@@ -106,8 +107,15 @@ class Graph(object):
 
     def redraw_display(self):
         # draw the X & Y axis lines
+        self.num_updates += 1
+        if self.num_updates == self.UPDATES_FULL_REFRESH:
+            # cycle the eink display
+            self.num_updates = 0
+            ugfx.area(0, LINE_Y, WIDTH, HEIGHT-LINE_Y, ugfx.BLACK)
+            ugfx.flush()
+            ugfx.area(0, LINE_Y, WIDTH, HEIGHT-LINE_Y, ugfx.WHITE)
+            ugfx.flush()
 
-        # todo: do the binky thing here too
         ugfx.area(0, LINE_Y, WIDTH, HEIGHT-LINE_Y, ugfx.WHITE)
         ugfx.line(LINE_X, LINE_Y, LINE_X, XAXIS_Y, ugfx.BLACK)
         ugfx.line(0, XAXIS_Y, WIDTH-1, XAXIS_Y, ugfx.BLACK)
@@ -122,7 +130,7 @@ class Graph(object):
             if step % 2 == 1:
                 from_x = LINE_X-4
                 # to_x = LINE_X
-                ugfx.string(0, y - 6, "{:.1f}".format(step * watts_per_step / 1000), "", ugfx.BLACK)
+                ugfx.string(0, y - 6, '{:.1f}'.format(step * watts_per_step / 1000), '', ugfx.BLACK)
             else:
                 from_x = LINE_X - 3
                 # to_x = LINE_X - 1
@@ -153,7 +161,7 @@ class Graph(object):
         SCROLL_SECONDS = WIDTH_SECONDS // 4
         new_origin = ((self.samples[-1].ts + 1) // SCROLL_SECONDS) * SCROLL_SECONDS \
             - 3 * SCROLL_SECONDS
-        print("graph timestamp range {} - {} ({} seconds)".format(
+        print('graph timestamp range {} - {} ({} seconds)'.format(
             new_origin, new_origin + WIDTH_SECONDS, WIDTH_SECONDS))
         while self.samples[0].ts < new_origin:
             del self.samples[0]
@@ -162,7 +170,7 @@ class Graph(object):
 
         new_max = int(max(s.max_power() for s in self.samples) * 1.05)  # 5% headroom on graph
         if new_origin != self.origin_ts or new_max != self.max_power:
-            print("origin {} -> {} max {} -> {}, redraw!".format(
+            print('origin {} -> {} max {} -> {}, redraw!'.format(
                 self.origin_ts, new_origin, self.max_power, new_max))
             # need to draw the whole graph again!
             self.origin_ts = new_origin
@@ -173,7 +181,7 @@ class Graph(object):
             self.draw_samples(samples)
 
     def draw_samples(self, samples):
-        print("Drawing {} samples".format(len(samples)))
+        print('Drawing {} samples'.format(len(samples)))
 
         def value_to_y(value):
             assert value < self.max_power
@@ -214,7 +222,7 @@ def uri_encode(seq):
            or (ord(b'0') <= c <= ord(b'9')) or c in b'-_.~':
             resp += chr(c)
         else:
-            resp += b"%{:02x}".format(c)
+            resp += b'%{:02x}'.format(c)
     return resp
 
 
@@ -226,17 +234,18 @@ def main():
 
     samples = []
     while not samples:
-        samples = query_data('now() - 60m')
+        seconds_per_graph = (WIDTH - LINE_X) * graph.TS_SCALAR
+        samples = query_data('now() - {}s'.format(seconds_per_graph))
         print(samples)
 
     while True:
-        print("in main loop")
+        print('in main loop')
         if samples:
             numbers.update(samples[-1])
             graph.update(samples)
         time.sleep(5)
         samples = query_data('{}s'.format(samples[-1].ts), '5s')
-        print("got {} samples".format(len(samples)))
+        print('got {} samples'.format(len(samples)))
 
 
 def get_max_power(samples):
@@ -277,5 +286,5 @@ def query_data(since, group_by='5s'):
     return result
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
