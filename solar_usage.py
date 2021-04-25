@@ -3,6 +3,11 @@ import ugfx
 import time
 import json
 
+# InfluxDB credentials
+#
+# Currently hard-coded. Also an IP as DNS isn't working (TODO)
+INFLUXDB_SERVER = 'http://192.168.66.1:8086'
+
 # Some layout dimensions
 WIDTH = 296
 HEIGHT = 128
@@ -43,15 +48,15 @@ class NumberDisplay(object):
 
     Draws to the display from (0,0) to (WIDTH-1, LINE_Y), inclusive
     """
-    REDRAW_UPDATES = 3
+    REDRAW_UPDATES = 30
 
     def __init__(self):
-        self.num_updates = 0  # trigger a full redraw next
+        self.num_updates = 0
         self.last_sample = None
         self.redraw_display()
 
     def redraw_display(self):
-        for _ in range(1):  # todo make this cycle to refresh e-ink
+        for _ in range(3 if self.num_updates == self.REDRAW_UPDATES else 1):
             ugfx.area(0, 0, WIDTH, LINE_Y, ugfx.BLACK)
             ugfx.flush()
             ugfx.area(0, 0, WIDTH, LINE_Y, ugfx.WHITE)
@@ -59,8 +64,8 @@ class NumberDisplay(object):
 
         # line under the display, icons
         ugfx.line(0, LINE_Y, WIDTH - 1, LINE_Y, ugfx.BLACK)
-        ugfx.Imagebox(0, 0, 32, 32, './sun.png')
-        ugfx.Imagebox(130, 0, 32, 32, './house.png')
+        ugfx.display_image(0, 0, './sun.png')
+        ugfx.display_image(130, 0, './house.png')
         ugfx.flush()
 
     def update(self, sample):
@@ -90,10 +95,12 @@ class Graph(object):
 
     Draws to the display from (0,0) to (WIDTH-1, LINE_Y), inclusive
     """
-    TS_SCALAR = 30  # this many seconds per pixel
     X_WIDTH = WIDTH-LINE_X  # 278, 1 minute per pixel
     Y_HEIGHT = XAXIS_Y-LINE_Y
     UPDATES_FULL_REFRESH = 5
+
+    WIDTH_SECONDS = 90 * 60  # width of graph in seconds
+    TS_SCALAR = WIDTH_SECONDS / X_WIDTH  # this many seconds per pixel (float)
 
     def __init__(self):
         self.num_updates = 0  # trigger a full redraw next
@@ -109,19 +116,34 @@ class Graph(object):
         # draw the X & Y axis lines
         self.num_updates += 1
         if self.num_updates == self.UPDATES_FULL_REFRESH:
-            # cycle the eink display
+            # cycle the eink display to refresh the pixels
             self.num_updates = 0
-            ugfx.area(0, LINE_Y, WIDTH, HEIGHT-LINE_Y, ugfx.BLACK)
-            ugfx.flush()
+            for _ in range(3):
+                ugfx.area(0, LINE_Y, WIDTH, HEIGHT-LINE_Y, ugfx.BLACK)
+                ugfx.flush()
+                ugfx.area(0, LINE_Y, WIDTH, HEIGHT-LINE_Y, ugfx.WHITE)
+                ugfx.flush()
+        else:
+            # in between, just draw the display white one time
             ugfx.area(0, LINE_Y, WIDTH, HEIGHT-LINE_Y, ugfx.WHITE)
-            ugfx.flush()
 
-        ugfx.area(0, LINE_Y, WIDTH, HEIGHT-LINE_Y, ugfx.WHITE)
         ugfx.line(LINE_X, LINE_Y, LINE_X, XAXIS_Y, ugfx.BLACK)
         ugfx.line(0, XAXIS_Y, WIDTH-1, XAXIS_Y, ugfx.BLACK)
         ugfx.flush()
 
-        # draw the graph Y axis
+        self.redraw_y_axis()
+        self.redraw_x_axis()
+
+        if not self.samples:
+            self.origin_ts = None
+            return  # nothing else to draw, leave the X axis and graph area blank
+
+        self.last_x = None
+        self.last_solar_y = None
+        self.last_usage_y = None
+        self.draw_samples(self.samples)  # draw the full graph!
+
+    def redraw_y_axis(self):
         step_height = 15
         steps = 6
         watts_per_step = self.max_power // steps
@@ -137,14 +159,29 @@ class Graph(object):
             ugfx.line(from_x, y, LINE_X, y, HEIGHT-1)
         ugfx.flush()
 
-        if not self.samples:
-            self.origin_ts = None
-            return  # nothing else to draw, leave the X axis and graph area blank
+    def redraw_x_axis(self):
+        if self.origin_ts is None:
+            return  # no X axis yet, will draw it as soon as we get a sample
+        NUM_MARKERS = 2
+        for m in range(NUM_MARKERS):
+            # leave a full gap at the start and the end
+            fraction = (m + 1) / (NUM_MARKERS + 1)
+            x = LINE_X + int(fraction * self.X_WIDTH)
+            ts = self.origin_ts + (fraction * self.WIDTH_SECONDS)
 
-        self.last_x = None
-        self.last_solar_y = None
-        self.last_usage_y = None
-        self.draw_samples(self.samples)  # draw the full graph!
+            # timezones in MicroPython are hard, so format as a relative time stamp, relative
+            # to the end of the graph (ie this many hours and minutes ago)
+
+            # rel_ts is the number of seconds before the end of the graph
+            rel_ts = int(self.origin_ts + self.WIDTH_SECONDS - ts)
+            minutes = (rel_ts //  60) % 60
+            hours = (rel_ts // 3600)
+
+            print("{}:{} fraction={} x={} ts={} origin_ts={} LINE_X={}"
+                  .format(hours, minutes, fraction, x, ts, self.origin_ts, LINE_X))
+
+            ugfx.string(x-15, XAXIS_Y+2, '-{:02d}:{:02d}'.format(hours, minutes), '', ugfx.BLACK)
+            ugfx.line(x, XAXIS_Y, x, XAXIS_Y+2, ugfx.BLACK)
 
     def update(self, samples):
         for new_sample in samples:
@@ -157,12 +194,12 @@ class Graph(object):
         if not changed:
             return  # nothing new, nothing to do
 
-        WIDTH_SECONDS = (self.X_WIDTH * self.TS_SCALAR)
-        SCROLL_SECONDS = WIDTH_SECONDS // 4
+        SCROLL_SECONDS = self.WIDTH_SECONDS // 4
         new_origin = ((self.samples[-1].ts + 1) // SCROLL_SECONDS) * SCROLL_SECONDS \
             - 3 * SCROLL_SECONDS
-        print('graph timestamp range {} - {} ({} seconds)'.format(
-            new_origin, new_origin + WIDTH_SECONDS, WIDTH_SECONDS))
+        if new_origin != self.origin_ts:
+            print('graph timestamp range {} - {} ({} seconds)'.format(
+                new_origin, new_origin + self.WIDTH_SECONDS, self.WIDTH_SECONDS))
         while self.samples[0].ts < new_origin:
             del self.samples[0]
 
@@ -189,7 +226,7 @@ class Graph(object):
             return self.Y_HEIGHT - int(result) + LINE_Y
 
         for s in samples:
-            x = (s.ts - self.origin_ts) // self.TS_SCALAR + LINE_X
+            x = int((s.ts - self.origin_ts) / self.TS_SCALAR) + LINE_X
             if self.last_x is None:
                 self.last_x = x
 
@@ -198,21 +235,24 @@ class Graph(object):
             if s.solar:
                 solar_y = value_to_y(s.solar)
                 if self.last_solar_y is None:
-                    self.last_solar_y = solar_Y
-                ugfx.line(self.last_x, self.solar_y, x, solar_y, ugfx.GREY)  # color??
+                    self.last_solar_y = solar_y
+                solar_x = x - (x % 2)  # no greyscale, so draw the solar as a dotted line,
+                ugfx.line(solar_x, self.last_solar_y, solar_x, solar_y, ugfx.BLACK)
                 self.last_solar_y = solar_y
             if s.usage:
                 usage_y = value_to_y(s.usage)
                 if self.last_usage_y is None:
                     self.last_usage_y = usage_y
-                ugfx.line(self.last_x, self.last_usage_y, x, usage_y, ugfx.BLACK)
+                if x - self.last_x < 5:
+                    ugfx.line(self.last_x, self.last_usage_y, x, usage_y, ugfx.BLACK)
+                else:
+                    # don't draw big diagonal line if there was an outage with no usage data,
+                    # leave a gap (solar doesn't have this issue as all of its graph segments
+                    # are vertical lineswith gaps)
+                    ugfx.pixel(x, usage_y, ugfx.BLACK)
                 self.last_usage_y = usage_y
             self.last_x = x
-            print(s,x,solar_y,usage_y)
         ugfx.flush()
-
-    def sample_y(self, value):
-        return result
 
 
 def uri_encode(seq):
@@ -234,17 +274,16 @@ def main():
 
     samples = []
     while not samples:
-        seconds_per_graph = (WIDTH - LINE_X) * graph.TS_SCALAR
+        seconds_per_graph = int((WIDTH - LINE_X) * graph.TS_SCALAR) + 1
         samples = query_data('now() - {}s'.format(seconds_per_graph))
-        print(samples)
+        print("got {} initial samples for past {} seconds".format(len(samples), seconds_per_graph))
 
     while True:
-        print('in main loop')
         if samples:
             numbers.update(samples[-1])
             graph.update(samples)
         time.sleep(5)
-        samples = query_data('{}s'.format(samples[-1].ts), '5s')
+        samples = query_data('{}s'.format(samples[-1].ts))
         print('got {} samples'.format(len(samples)))
 
 
@@ -265,16 +304,31 @@ def get_max_power(samples):
 
 
 def query_data(since, group_by='5s'):
+    # note: grouping b graph.TS_SCALAR is also an option, so each x on the graph has only a single point. However this way we can return multiple samples for the same x point and draw them
+    # all (showing the span on the graph) rather than showing a single point for the mean
+    #
+    # a more efficient way to do this would be to ask InfluxDB for min,max of each TS_SCALAR time span and then draw each sample as a vertical line. Maybe in a future update...
+
     # returns list of 3-lists [timestamp, solar, load]
     query = uri_encode('SELECT mean(solar),mean(load)*-1 from power where '
                        'time > {} group by time({})'.format(since, group_by))
 
-    # spiky.lan
-    resp = urequests.post('http://192.168.66.1:8086/query?db=sensors&epoch=s',
-                          data=b'q='+query,
-                          headers={
-                              'Content-Type': 'application/x-www-form-urlencoded'
-                          })
+    try:
+        # for some reason DNS isn't working
+        resp = urequests.post('{}/query?db=sensors&epoch=s'.format(INFLUXDB_SERVER),
+                              data=b'q='+query,
+                              headers={
+                                  'Content-Type': 'application/x-www-form-urlencoded'
+                              })
+    except OSError:
+        print("Failed to connect to InfluxDB server")
+        return []
+
+    if resp.status_code != 200:
+        print("InfluxDB returned error code {}".format(resp.status_code))
+        resp.close()
+        return []
+
     text = resp.text
     resp.close()
 
