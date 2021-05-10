@@ -301,7 +301,7 @@ def main():
             last_sample = samples[-1]
             # use the timestamp from influxdb to update our local timekeeping
             last_sample.update_time()
-        elif unix_time() - last_sample.ts > 20:
+        elif unix_time() - last_sample.ts > 30:
             # if no update received from influxDB, put this on the display
             numbers.update_no_sample()
 
