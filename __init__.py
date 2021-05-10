@@ -1,3 +1,2 @@
-import solar_usage
-
+from . import solar_usage
 solar_usage.main()
