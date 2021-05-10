@@ -135,6 +135,8 @@ class Graph(object):
 
     def __init__(self):
         self.num_updates = 0  # trigger a full redraw next
+        self.last_x = None
+        self.last_usage_y = None
         self.samples = []
         self.max_power = 5000  # determines the scale of the graph in Watts, update() will recalc it
         self.origin_ts = None  # timestamp that correlates to the left-hand side of the graph, update() will recalc it
@@ -162,6 +164,9 @@ class Graph(object):
 
         self.redraw_y_axis()
         self.redraw_x_axis()
+
+        self.last_x = None
+        self.last_usage_y = None
 
         if not self.samples:
             self.origin_ts = None
@@ -241,8 +246,6 @@ class Graph(object):
         for s in samples:
             x = int((s.ts - self.origin_ts) / self.SECONDS_PER_PIXEL) + LINE_X
 
-            solar_y = None
-            usage_y = None
             if s.solar:
                 solar_y_min = value_to_y(s.solar[0])
                 solar_y_max = value_to_y(s.solar[1])
@@ -252,6 +255,11 @@ class Graph(object):
                 usage_y_min = value_to_y(s.usage[0])
                 usage_y_max = value_to_y(s.usage[1])
                 ugfx.line(x, usage_y_min, x, usage_y_max, ugfx.BLACK)
+                # horizontally join the high points of the usage graph, if they exist
+                if self.last_x == x - 1:
+                    ugfx.line(self.last_x, self.last_usage_y, x, usage_y_max, ugfx.BLACK)
+                self.last_x = x
+                self.last_usage_y = usage_y_max
         ugfx.flush()
 
 
