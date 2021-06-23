@@ -22,7 +22,7 @@ HEIGHT = 128
 LINE_Y = 33  # line between NumberDisplay and GraphDisplay
 LINE_X = 20  # Y axis vertical line
 
-XAXIS_Y = HEIGHT-4  # X axis horizontal line
+XAXIS_Y = HEIGHT - 13  # X axis horizontal line
 
 
 def round_up(value, to_next):
@@ -119,15 +119,13 @@ class NumberDisplay(object):
 class Graph(object):
     """
     Bottom half of display shows a historical data graph
-
-    Draws to the display from (0,0) to (WIDTH-1, LINE_Y), inclusive
     """
-    X_WIDTH = WIDTH-LINE_X  # 278, 1 minute per pixel
+    X_WIDTH = WIDTH-LINE_X
     Y_HEIGHT = XAXIS_Y-LINE_Y-2
     UPDATES_FULL_REFRESH = 3
 
     WIDTH_SECONDS = 60 * 60  # width of graph in seconds
-    SECONDS_PER_PIXEL = int(WIDTH_SECONDS / X_WIDTH)+1  # this many seconds per pixel (float)
+    SECONDS_PER_PIXEL = int(WIDTH_SECONDS / X_WIDTH)  # this many seconds per pixel (float)
 
     def __init__(self):
         self.num_updates = 0  # trigger a full redraw next
@@ -137,6 +135,11 @@ class Graph(object):
         self.max_power = 5000  # determines the scale of the graph in Watts, update() will recalc it
         self.origin_ts = None  # timestamp that correlates to the left-hand side of the graph, update() will recalc it
         self.redraw_display()
+
+    def timestamp_to_x(self, ts):
+        r = ((ts - self.origin_ts) * self.X_WIDTH) // self.WIDTH_SECONDS
+        r = max(0, min(r, self.X_WIDTH - 1))
+        return LINE_X + r
 
     def redraw_display(self):
         # draw the X & Y axis lines
@@ -189,11 +192,15 @@ class Graph(object):
     def redraw_x_axis(self):
         if self.origin_ts is None:
             return  # no X axis yet, will draw it as soon as we get a sample
-        NUM_MARKERS = 6
-        for m in range(NUM_MARKERS):
-            fraction = (m) / (NUM_MARKERS)
-            x = LINE_X + int(fraction * self.X_WIDTH)
+        NUM_SEGMENTS = 4
+        ts = self.origin_ts
+        for m in range(NUM_SEGMENTS + 1):
+            x = self.timestamp_to_x(ts)
             ugfx.line(x, XAXIS_Y, x, HEIGHT, ugfx.BLACK)
+            minutes = (ts // 60) % 60
+            ugfx.string(x + 2, XAXIS_Y, ':{:02}'.format(minutes), 'Roboto_Regular12', ugfx.BLACK)
+            ugfx.flush()
+            ts += self.WIDTH_SECONDS // NUM_SEGMENTS
 
     def update(self, samples):
         for new_sample in samples:
@@ -235,7 +242,7 @@ class Graph(object):
             return self.Y_HEIGHT - int(result) + LINE_Y
 
         for s in samples:
-            x = int((s.ts - self.origin_ts) / self.SECONDS_PER_PIXEL) + LINE_X
+            x = self.timestamp_to_x(s.ts)
 
             if s.solar:
                 solar_y_min = value_to_y(s.solar[0])
@@ -247,7 +254,7 @@ class Graph(object):
                 usage_y_max = value_to_y(s.usage[1])
                 ugfx.line(x, usage_y_min, x, usage_y_max, ugfx.BLACK)
                 # horizontally join the high points of the usage graph, if they exist
-                if self.last_x == x - 1:
+                if self.last_x in (x - 1, x - 2):
                     ugfx.line(self.last_x, self.last_usage_y, x, usage_y_max, ugfx.BLACK)
                 self.last_x = x
                 self.last_usage_y = usage_y_max
@@ -302,9 +309,12 @@ def main():
 
 def query_data(influxdb_url, since):
     # returns list of 3-lists [timestamp, solar, load]
-    # limit is to prevent allocation failure, graph will draw in segments after reset
+    LIMIT = 200      # to prevent allocation failure on deserializing, graph will draw in segments after reset
+
+    result = []
+
     query = uri_encode('SELECT min(solar),max(solar),max(load)*-1,min(load)*-1 from power where '
-                       'time > {} group by time({}s) fill(none) limit 200'.format(since, Graph.SECONDS_PER_PIXEL))
+                       'time > {} group by time({}s) fill(none) limit {}'.format(since, Graph.SECONDS_PER_PIXEL, LIMIT))
 
     try:
         resp = urequests.post('{}/query?db=sensors&epoch=s'.format(influxdb_url),
@@ -328,7 +338,8 @@ def query_data(influxdb_url, since):
     if not len(text):
         return []
     data = json.loads(text)
-    result = [Sample(*x) for x in data['results'][0]['series'][0]['values']]
+    # re-limit here due to some InfluxDB bug (?) where the averaging+LIMIT can append some junk 0 samples
+    result = [Sample(*x) for x in data['results'][0]['series'][0]['values']][:LIMIT]
     result = [s for s in result if not s.is_empty()]   # remove all the empty samples
     return result
 
