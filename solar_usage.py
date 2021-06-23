@@ -1,3 +1,4 @@
+import badge
 import urequests
 import ugfx
 import json
@@ -13,11 +14,6 @@ try:
 except ImportError:
     rtc = None
     wifi = None
-
-# InfluxDB credentials
-#
-# Currently hard-coded. Also an IP as DNS isn't working (TODO)
-INFLUXDB_SERVER = 'http://192.168.66.1:8086'
 
 # Some layout dimensions
 WIDTH = 296
@@ -270,18 +266,21 @@ def uri_encode(seq):
 
 
 def main():
+    badge.init()
     ugfx.init()
     if wifi:
         wifi.connect()
+
+    influxdb_url = badge.nvs_get_str('solar_usage', 'influxdb_url')
+    print('InfluxDB URL: {}'.format(influxdb_url))
 
     numbers = NumberDisplay()
     graph = Graph()
 
     samples = []
     while not samples:
-        seconds_per_graph = int((WIDTH - LINE_X) * graph.SECONDS_PER_PIXEL) + 1
-        samples = query_data('now() - {}s'.format(seconds_per_graph))
-        print("got {} initial samples for past {} seconds".format(len(samples), seconds_per_graph))
+        samples += query_data(influxdb_url, 'now() - {}s'.format(Graph.WIDTH_SECONDS))
+        print("got {} initial samples for past {} seconds".format(len(samples), Graph.WIDTH_SECONDS))
 
     last_sample = samples[0]
     last_sample.update_time()
@@ -297,18 +296,18 @@ def main():
             last_sample.update_time()
 
         utime.sleep(5)
-        samples = query_data('{}s'.format(last_sample.ts))
+        samples = query_data(influxdb_url, '{}s'.format(last_sample.ts))
         print('got {} samples'.format(len(samples)))
 
 
-def query_data(since):
+def query_data(influxdb_url, since):
     # returns list of 3-lists [timestamp, solar, load]
     # limit is to prevent allocation failure, graph will draw in segments after reset
     query = uri_encode('SELECT min(solar),max(solar),max(load)*-1,min(load)*-1 from power where '
                        'time > {} group by time({}s) fill(none) limit 200'.format(since, Graph.SECONDS_PER_PIXEL))
 
     try:
-        resp = urequests.post('{}/query?db=sensors&epoch=s'.format(INFLUXDB_SERVER),
+        resp = urequests.post('{}/query?db=sensors&epoch=s'.format(influxdb_url),
                               data=b'q='+query,
                               headers={
                                   'Content-Type': 'application/x-www-form-urlencoded'
