@@ -193,10 +193,9 @@ class Graph(object):
     def redraw_x_axis(self):
         if self.origin_ts is None:
             return  # no X axis yet, will draw it as soon as we get a sample
-        NUM_MARKERS = 5
+        NUM_MARKERS = 6
         for m in range(NUM_MARKERS):
-            # leave a full gap at the start and the end
-            fraction = (m + 1) / (NUM_MARKERS + 1)
+            fraction = (m) / (NUM_MARKERS)
             x = LINE_X + int(fraction * self.X_WIDTH)
             ugfx.line(x, XAXIS_Y, x, HEIGHT, ugfx.BLACK)
 
@@ -204,22 +203,18 @@ class Graph(object):
         for new_sample in samples:
             # add the new samples to the current list of samples
             # (assuming they come in order, but possibly some new samples are dups)
-            changed = False
             if not self.samples or self.samples[-1].ts < new_sample.ts:
                 self.samples.append(new_sample)
-                changed = True
-        if not changed:
-            return  # nothing new, nothing to do
 
         SCROLL_SECONDS = self.WIDTH_SECONDS // 4
         new_origin = round_up(unix_time(), SCROLL_SECONDS) - self.WIDTH_SECONDS
         if new_origin != self.origin_ts:
             print('graph timestamp range {} - {} ({} seconds)'.format(
                 new_origin, new_origin + self.WIDTH_SECONDS, self.WIDTH_SECONDS))
-        while self.samples[0].ts < new_origin:
+        while self.samples and self.samples[0].ts < new_origin:
             del self.samples[0]
-
-        # there should be at least one sample in the graph at this point (or above will error out)
+        if not self.samples:
+            return  # empty
 
         new_max = round_up(max(s.max_power() for s in self.samples), 500)
         new_max += 500
@@ -288,29 +283,29 @@ def main():
         samples = query_data('now() - {}s'.format(seconds_per_graph))
         print("got {} initial samples for past {} seconds".format(len(samples), seconds_per_graph))
 
-    last_sample = samples[-1]
+    last_sample = samples[0]
     last_sample.update_time()
     while True:
         if samples:
-            numbers.update(samples[-1])
+            if samples[-1].ts > last_sample.ts:
+                numbers.update(samples[-1])
+            elif unix_time() - last_sample.ts > 30:
+                numbers.update_no_sample()
             graph.update(samples)
+
+            last_sample = samples[-1]
+            last_sample.update_time()
+
         utime.sleep(5)
         samples = query_data('{}s'.format(last_sample.ts))
         print('got {} samples'.format(len(samples)))
-        if samples:
-            last_sample = samples[-1]
-            # use the timestamp from influxdb to update our local timekeeping
-            last_sample.update_time()
-        elif unix_time() - last_sample.ts > 30:
-            # if no update received from influxDB, put this on the display
-            numbers.update_no_sample()
 
 
 def query_data(since):
     # returns list of 3-lists [timestamp, solar, load]
     # limit is to prevent allocation failure, graph will draw in segments after reset
     query = uri_encode('SELECT min(solar),max(solar),max(load)*-1,min(load)*-1 from power where '
-                       'time > {} group by time({}s) limit 200'.format(since, Graph.SECONDS_PER_PIXEL))
+                       'time > {} group by time({}s) fill(none) limit 200'.format(since, Graph.SECONDS_PER_PIXEL))
 
     try:
         resp = urequests.post('{}/query?db=sensors&epoch=s'.format(INFLUXDB_SERVER),
