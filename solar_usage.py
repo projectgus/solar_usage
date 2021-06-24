@@ -206,8 +206,9 @@ class Graph(object):
         for new_sample in samples:
             # add the new samples to the current list of samples
             # (assuming they come in order, but possibly some new samples are dups)
-            if not self.samples or self.samples[-1].ts < new_sample.ts:
-                self.samples.append(new_sample)
+            while self.samples and self.samples[-1].ts >= new_sample.ts:
+                del self.samples[-1]  # discard any duplicated samples
+            self.samples.append(new_sample)
 
         SCROLL_SECONDS = self.WIDTH_SECONDS // 4
         new_origin = round_up(unix_time(), SCROLL_SECONDS) - self.WIDTH_SECONDS
@@ -287,9 +288,15 @@ def main():
     graph = Graph()
 
     samples = []
-    while not samples:
-        samples += query_data(influxdb_url, 'now() - {}s'.format(Graph.WIDTH_SECONDS))
-        print("got {} initial samples for past {} seconds".format(len(samples), Graph.WIDTH_SECONDS))
+    start = 'now() - {}s'.format(Graph.WIDTH_SECONDS)
+    while True:  # build initial samples list in parts
+        new_samples = query_data(influxdb_url, start)
+        print("got {} initial samples".format(len(new_samples)))
+        if new_samples:
+            start = new_samples[-1].ts
+            samples += new_samples
+        if samples and len(new_samples) < 3:
+            break  # caught up!
 
     last_sample = samples[0]
     last_sample.update_time()
@@ -305,13 +312,16 @@ def main():
             last_sample.update_time()
 
         utime.sleep(5)
-        samples = query_data(influxdb_url, '{}s'.format(last_sample.ts))
+        samples = query_data(influxdb_url, last_sample.ts)
         print('got {} samples'.format(len(samples)))
 
 
 def query_data(influxdb_url, since):
     # returns list of 3-lists [timestamp, solar, load]
     LIMIT = 200      # to prevent allocation failure on deserializing, graph will draw in segments after reset
+
+    if isinstance(since, int):
+        since = '{}s'.format(since)
 
     result = []
 
@@ -340,8 +350,7 @@ def query_data(influxdb_url, since):
     if not len(text):
         return []
     data = json.loads(text)
-    # re-limit here due to some InfluxDB bug (?) where the averaging+LIMIT can append some junk 0 samples
-    result = [Sample(*x) for x in data['results'][0]['series'][0]['values']][:LIMIT]
+    result = [Sample(*x) for x in data['results'][0]['series'][0]['values']]
     result = [s for s in result if not s.is_empty()]   # remove all the empty samples
     return result
 
