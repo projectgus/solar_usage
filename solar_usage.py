@@ -128,13 +128,12 @@ class Graph(object):
     SECONDS_PER_PIXEL = int(WIDTH_SECONDS / X_WIDTH)  # this many seconds per pixel (float)
 
     def __init__(self):
-        self.num_updates = 0  # trigger a full redraw next
+        self.num_updates = 0
         self.last_x = None
         self.last_usage_y = None
         self.samples = []
-        self.max_power = 5000  # determines the scale of the graph in Watts, update() will recalc it
+        self.max_power = None
         self.origin_ts = None  # timestamp that correlates to the left-hand side of the graph, update() will recalc it
-        self.redraw_display()
 
     def timestamp_to_x(self, ts):
         r = ((ts - self.origin_ts) * self.X_WIDTH) // self.WIDTH_SECONDS
@@ -284,8 +283,11 @@ def main():
     influxdb_url = badge.nvs_get_str('solar_usage', 'influxdb_url')
     print('InfluxDB URL: {}'.format(influxdb_url))
 
-    numbers = NumberDisplay()
-    graph = Graph()
+    ugfx.clear(ugfx.BLACK)
+    ugfx.flush()
+    ugfx.clear(ugfx.WHITE)
+    ugfx.string(WIDTH//2 - 200, HEIGHT//2 - 11, 'Initializing...', 'Roboto_Regular22', ugfx.BLACK)
+    ugfx.flush()
 
     samples = []
     start = 'now() - {}s'.format(Graph.WIDTH_SECONDS)
@@ -299,7 +301,10 @@ def main():
             break  # caught up!
 
     last_sample = samples[0]
-    last_sample.update_time()
+    samples[-1].update_time()
+
+    numbers = NumberDisplay()
+    graph = Graph()
     while True:
         if samples:
             if samples[-1].ts > last_sample.ts:
