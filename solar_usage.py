@@ -44,7 +44,7 @@ class Sample(object):
         return '{}: {} / {}'.format(self.ts, self.solar, self.usage)
 
     def is_empty(self):
-        return self.solar is None and self.usage is None
+        return self.solar is None and (self.usage is None or self.usage == (0, 0))
 
     def max_power(self):
         return max(self.solar[1] if self.solar else 0, self.usage[1] if self.usage else 0)
@@ -236,6 +236,8 @@ class Graph(object):
         print('Drawing {} samples'.format(len(samples)))
 
         def value_to_y(value):
+            if value < 0:
+                value = 0  # some kind of influx bug causes occasional negative minimums?
             assert value < self.max_power
             result = (value / self.max_power) * self.Y_HEIGHT
             result = max(result, 1)
