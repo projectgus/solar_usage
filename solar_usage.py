@@ -9,11 +9,13 @@ UNIX_EPOCH_OFFSET = 0
 try:
     import wifi
     import machine
+    import micropython
     rtc = machine.RTC()
     UNIX_EPOCH_OFFSET = 946684800  # seconds between Unix Epoch 1 Jan 1970 & MP embedded Epoch 1 Jan 2000
 except ImportError:
     rtc = None
     wifi = None
+    micropython = None
 
 # Some layout dimensions
 WIDTH = 296
@@ -57,7 +59,7 @@ class Sample(object):
             unix_ts = self.ts - UNIX_EPOCH_OFFSET
             if unix_ts > utime.time() + 5:  # to save on overhead, need to be adjusting by more than 5 seconds
                 rtc.init(utime.gmtime(unix_ts))
-                print('New time is {} {}'.format(utime.time(), utime.gmtime(int(utime.time()))))
+                print('New time is {} {}'.format(unix_time(), utime.gmtime(int(utime.time()))))
 
 
 class NumberDisplay(object):
@@ -140,6 +142,14 @@ class Graph(object):
         r = max(0, min(r, self.X_WIDTH - 1))
         return LINE_X + r
 
+    def value_to_y(self, value):
+        if value < 0:
+            value = 0  # some kind of influx bug causes occasional negative minimums?
+        assert value < self.max_power
+        result = (value / self.max_power) * self.Y_HEIGHT
+        result = max(result, 1)
+        return self.Y_HEIGHT - int(result) + LINE_Y
+
     def redraw_display(self):
         # draw the X & Y axis lines
         self.num_updates += 1
@@ -173,18 +183,15 @@ class Graph(object):
         self.draw_samples(self.samples)  # draw the full graph!
 
     def redraw_y_axis(self):
-        step_height = 15
         steps = 6
-        watts_per_step = self.max_power // steps
+        watts_per_step = self.max_power / steps
         for step in range(steps):
-            y = XAXIS_Y - step * step_height
+            y = self.value_to_y(step * watts_per_step)
             if step % 2 == 1:
-                from_x = LINE_X-2
-                # to_x = LINE_X
+                from_x = LINE_X - 2
                 ugfx.string(0, y - 6, '{:.1f}'.format(step * watts_per_step / 1000), 'Roboto_Regular12', ugfx.BLACK)
             else:
                 from_x = LINE_X - 5
-                # to_x = LINE_X - 1
             ugfx.line(from_x, y, LINE_X, y, HEIGHT-1)
         ugfx.flush()
 
@@ -202,13 +209,7 @@ class Graph(object):
             ts += self.WIDTH_SECONDS // NUM_SEGMENTS
 
     def update(self, samples):
-        for new_sample in samples:
-            # add the new samples to the current list of samples
-            # (assuming they come in order, but possibly some new samples are dups)
-            while self.samples and self.samples[-1].ts >= new_sample.ts:
-                del self.samples[-1]  # discard any duplicated samples
-            self.samples.append(new_sample)
-
+        # check for a scroll event
         SCROLL_SECONDS = self.WIDTH_SECONDS // 4
         new_origin = round_up(unix_time(), SCROLL_SECONDS) - self.WIDTH_SECONDS
         if new_origin != self.origin_ts:
@@ -216,6 +217,16 @@ class Graph(object):
                 new_origin, new_origin + self.WIDTH_SECONDS, self.WIDTH_SECONDS))
         while self.samples and self.samples[0].ts < new_origin:
             del self.samples[0]
+
+        for new_sample in samples:
+            # add the new samples to the current list of samples
+            if new_sample.ts < new_origin:
+                continue
+            elif self.samples and self.samples[-1].ts >= new_sample.ts:
+                self.samples[-1] = new_sample  # some new samples are dups
+            else:
+                self.samples.append(new_sample)
+
         if not self.samples:
             return  # empty
 
@@ -235,25 +246,17 @@ class Graph(object):
     def draw_samples(self, samples):
         print('Drawing {} samples'.format(len(samples)))
 
-        def value_to_y(value):
-            if value < 0:
-                value = 0  # some kind of influx bug causes occasional negative minimums?
-            assert value < self.max_power
-            result = (value / self.max_power) * self.Y_HEIGHT
-            result = max(result, 1)
-            return self.Y_HEIGHT - int(result) + LINE_Y
-
         for s in samples:
             x = self.timestamp_to_x(s.ts)
 
             if s.solar:
-                solar_y_min = value_to_y(s.solar[0])
-                solar_y_max = value_to_y(s.solar[1])
+                solar_y_min = self.value_to_y(s.solar[0])
+                solar_y_max = self.value_to_y(s.solar[1])
                 solar_x = x - (x % 2)  # no greyscale, so draw the solar as a dotted line,
                 ugfx.line(solar_x, solar_y_min, solar_x, solar_y_max, ugfx.BLACK)
             if s.usage:
-                usage_y_min = value_to_y(s.usage[0])
-                usage_y_max = value_to_y(s.usage[1])
+                usage_y_min = self.value_to_y(s.usage[0])
+                usage_y_max = self.value_to_y(s.usage[1])
                 ugfx.line(x, usage_y_min, x, usage_y_max, ugfx.BLACK)
                 # horizontally join the high points of the usage graph, if they exist
                 if self.last_x in (x - 1, x - 2):
@@ -286,7 +289,7 @@ def main():
     ugfx.clear(ugfx.BLACK)
     ugfx.flush()
     ugfx.clear(ugfx.WHITE)
-    ugfx.string(WIDTH//2 - 200, HEIGHT//2 - 11, 'Initializing...', 'Roboto_Regular22', ugfx.BLACK)
+    ugfx.string(WIDTH//2 - 50, HEIGHT//2 - 11, 'Solarising...', 'Roboto_Regular22', ugfx.BLACK)
     ugfx.flush()
 
     samples = []
@@ -315,6 +318,9 @@ def main():
 
             last_sample = samples[-1]
             last_sample.update_time()
+
+        if micropython:
+            micropython.mem_info()
 
         utime.sleep(5)
         samples = query_data(influxdb_url, last_sample.ts)
