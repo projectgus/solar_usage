@@ -2,6 +2,7 @@ import badge
 import gc
 import urequests
 import ugfx
+import json
 import sys
 import utime
 
@@ -292,10 +293,11 @@ def main():
     ugfx.string(WIDTH//2 - 50, HEIGHT//2 - 11, 'Solarising...', 'Roboto_Regular22', ugfx.BLACK)
     ugfx.flush()
 
-    start = 'now() - {}s'.format(Graph.WIDTH_SECONDS)
     samples = []
-    while len(samples) < 2:
+    start = 'now() - {}s'.format(Graph.WIDTH_SECONDS)
+    while not samples:
         samples = query_data(influxdb_url, start)
+        print("got {} initial samples".format(len(samples)))
 
     last_sample = samples[0]
     samples[-1].update_time()
@@ -316,22 +318,6 @@ def main():
         utime.sleep(5)
         samples = query_data(influxdb_url, last_sample.ts)
         print('got {} samples'.format(len(samples)))
-
-
-def naive_read_until(f, substr):
-    result = f.read(len(substr))
-    while not result.endswith(substr):
-        result += f.read(1)
-        if not result:
-            return None
-    return result
-
-
-def json_f(v):
-    try:
-        return float(v)
-    except ValueError:
-        return None
 
 
 def query_data(influxdb_url, since):
@@ -360,26 +346,11 @@ def query_data(influxdb_url, since):
         resp.close()
         return []
 
-    result = []
-
-    values_marker = b'"values":['
-    if not naive_read_until(resp.raw, values_marker):
-        print('No values found in result. JSON format changed?')
-        return []
-
-    value = naive_read_until(resp.raw, b']')
-    while b'[' in value:  # expect a JSON list of samples b'[ts,min_solar,...]'
-        fields = value[value.index(b'[')+1:-1].split(b',')
-        sample = Sample(int(fields[0]),
-                        json_f(fields[1]),
-                        json_f(fields[2]),
-                        json_f(fields[3]),
-                        json_f(fields[4]))
-        if not sample.is_empty():
-            result.append(sample)
-        value = naive_read_until(resp.raw, b']')
-        gc.collect()
-
+    data = json.load(resp.raw)
+    resp.close()
+    gc.collect()
+    result = [Sample(*x) for x in data['results'][0]['series'][0]['values']]
+    result = [s for s in result if not s.is_empty()]   # remove all the empty samples
     return result
 
 
