@@ -1,7 +1,7 @@
 import badge
+import gc
 import urequests
 import ugfx
-import json
 import sys
 import utime
 
@@ -292,16 +292,10 @@ def main():
     ugfx.string(WIDTH//2 - 50, HEIGHT//2 - 11, 'Solarising...', 'Roboto_Regular22', ugfx.BLACK)
     ugfx.flush()
 
-    samples = []
     start = 'now() - {}s'.format(Graph.WIDTH_SECONDS)
-    while True:  # build initial samples list in parts
-        new_samples = query_data(influxdb_url, start)
-        print("got {} initial samples".format(len(new_samples)))
-        if new_samples:
-            start = new_samples[-1].ts
-            samples += new_samples
-        if samples and len(new_samples) < 3:
-            break  # caught up!
+    samples = []
+    while len(samples) < 2:
+        samples = query_data(influxdb_url, start)
 
     last_sample = samples[0]
     samples[-1].update_time()
@@ -319,17 +313,29 @@ def main():
             last_sample = samples[-1]
             last_sample.update_time()
 
-        if micropython:
-            micropython.mem_info()
-
         utime.sleep(5)
         samples = query_data(influxdb_url, last_sample.ts)
         print('got {} samples'.format(len(samples)))
 
 
+def naive_read_until(f, substr):
+    result = f.read(len(substr))
+    while not result.endswith(substr):
+        result += f.read(1)
+        if not result:
+            return None
+    return result
+
+
+def json_f(v):
+    try:
+        return float(v)
+    except ValueError:
+        return None
+
+
 def query_data(influxdb_url, since):
     # returns list of 3-lists [timestamp, solar, load]
-    LIMIT = 200      # to prevent allocation failure on deserializing, graph will draw in segments after reset
 
     if isinstance(since, int):
         since = '{}s'.format(since)
@@ -337,7 +343,7 @@ def query_data(influxdb_url, since):
     result = []
 
     query = uri_encode('SELECT min(solar),max(solar),max(load)*-1,min(load)*-1 from power where '
-                       'time > {} group by time({}s) fill(none) limit {}'.format(since, Graph.SECONDS_PER_PIXEL, LIMIT))
+                       'time > {} group by time({}s) fill(none)'.format(since, Graph.SECONDS_PER_PIXEL))
 
     try:
         resp = urequests.post('{}/query?db=sensors&epoch=s'.format(influxdb_url),
@@ -354,15 +360,26 @@ def query_data(influxdb_url, since):
         resp.close()
         return []
 
-    print(resp.text)
-    text = resp.text
-    resp.close()
+    result = []
 
-    if not len(text):
+    values_marker = b'"values":['
+    if not naive_read_until(resp.raw, values_marker):
+        print('No values found in result. JSON format changed?')
         return []
-    data = json.loads(text)
-    result = [Sample(*x) for x in data['results'][0]['series'][0]['values']]
-    result = [s for s in result if not s.is_empty()]   # remove all the empty samples
+
+    value = naive_read_until(resp.raw, b']')
+    while b'[' in value:  # expect a JSON list of samples b'[ts,min_solar,...]'
+        fields = value[value.index(b'[')+1:-1].split(b',')
+        sample = Sample(int(fields[0]),
+                        json_f(fields[1]),
+                        json_f(fields[2]),
+                        json_f(fields[3]),
+                        json_f(fields[4]))
+        if not sample.is_empty():
+            result.append(sample)
+        value = naive_read_until(resp.raw, b']')
+        gc.collect()
+
     return result
 
 
