@@ -203,7 +203,7 @@ class Graph(object):
         ts = self.origin_ts
         for m in range(NUM_SEGMENTS + 1):
             x = self.timestamp_to_x(ts)
-            ugfx.line(x, XAXIS_Y, x, HEIGHT, ugfx.BLACK)
+            ugfx.line(x, XAXIS_Y, x, HEIGHT - 4, ugfx.BLACK)
             minutes = (ts // 60) % 60
             ugfx.string(x + 2, XAXIS_Y, ':{:02}'.format(minutes), 'Roboto_Regular12', ugfx.BLACK)
             ugfx.flush()
