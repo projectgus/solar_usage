@@ -1,3 +1,8 @@
+# Copyright (c) 2021, Angus Gratton
+#
+# SPDX-License-Identifier: MIT
+#
+# Extra disclaimer: This code is just a quick personal project and is not suitable for deployment by anyone, anywhere...
 import badge
 import gc
 import urequests
@@ -13,7 +18,7 @@ try:
     import micropython
     rtc = machine.RTC()
     UNIX_EPOCH_OFFSET = 946684800  # seconds between Unix Epoch 1 Jan 1970 & MP embedded Epoch 1 Jan 2000
-except ImportError:
+except ImportError:  # running on the host emulator
     rtc = None
     wifi = None
     micropython = None
@@ -56,6 +61,8 @@ class Sample(object):
         # Lazy global timekeeping: Maintain the RTC clock from InfluxDB results,
         # assuming that the latest sample we get back should be less than 10 seconds
         # in the past (provided that samples are being updated...)
+        #
+        # TODO: support InfluxDB auth (eek!)
         if rtc:
             unix_ts = self.ts - UNIX_EPOCH_OFFSET
             if unix_ts > utime.time() + 5:  # to save on overhead, need to be adjusting by more than 5 seconds
@@ -321,7 +328,7 @@ def main():
 
 
 def query_data(influxdb_url, since):
-    # returns list of 3-lists [timestamp, solar, load]
+    # returns list of Sample objects for all samples received in InfluxDB since 'since' timestamp
 
     if isinstance(since, int):
         since = '{}s'.format(since)
