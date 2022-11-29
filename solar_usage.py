@@ -32,6 +32,9 @@ LINE_X = 20  # Y axis vertical line
 
 XAXIS_Y = HEIGHT - 13  # X axis horizontal line
 
+INFLUXDB_HEADERS = {
+    'Content-Type': 'application/x-www-form-urlencoded'
+}
 
 def round_up(value, to_next):
     result = ((int(value) + to_next - 1) // to_next) * to_next
@@ -294,6 +297,11 @@ def main():
     influxdb_url = badge.nvs_get_str('solar_usage', 'influxdb_url')
     print('InfluxDB URL: {}'.format(influxdb_url))
 
+    influxdb_token = badge.nvs_get_str('solar_usage', 'influxdb_token')
+    if influxdb_token:
+        print('Got InfluxDB authorization token')
+        INFLUXDB_HEADERS['Authorization'] = 'Token {}'.format(influxdb_token)
+
     ugfx.clear(ugfx.BLACK)
     ugfx.flush()
     ugfx.clear(ugfx.WHITE)
@@ -341,11 +349,10 @@ def query_data(influxdb_url, since):
     try:
         resp = urequests.post('{}/query?db=sensors&epoch=s'.format(influxdb_url),
                               data=b'q='+query,
-                              headers={
-                                  'Content-Type': 'application/x-www-form-urlencoded'
-                              })
-    except OSError:
+                              headers=INFLUXDB_HEADERS)
+    except OSError as e:
         print("Failed to connect to InfluxDB server")
+        print(e)
         return []
 
     if resp.status_code != 200:
